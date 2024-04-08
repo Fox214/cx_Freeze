@@ -232,19 +232,6 @@ class Freezer:
         the source of a symbolic link is copied by deferring the creation of
         the link.
         """
-        if source.is_symlink():
-            real_source = source.resolve()
-            try:
-                symlink = real_source.relative_to(source.parent)
-            except ValueError:
-                symlink = Path(os.path.relpath(real_source, source.parent))
-            real_target = target.with_name(symlink.name)
-            if self.silent < 1:
-                print(f"[delay] linking {target} -> {symlink}")
-            self._symlinks.add((target, symlink, real_source.is_dir()))
-            # return the real source to be copied
-            return real_source, real_target
-        return source, target
 
     @abstractmethod
     def _post_copy_hook(
@@ -285,7 +272,6 @@ class Freezer:
         # Search the C runtimes, using the directory of the python libraries
         # and the directories of the base executable
         self._platform_add_extra_dependencies(dependent_files)
-
         for source in dependent_files:
             # Store dynamic libraries in appropriate location for platform.
             self._copy_top_dependency(source)
@@ -399,11 +385,6 @@ class Freezer:
 
     def _post_freeze_hook(self) -> None:
         """Post-Freeze work (can be overridden)."""
-        for target, symlink, symlink_is_directory in self._symlinks:
-            if self.silent < 1:
-                print(f"linking {target} -> {symlink}")
-            if not target.exists():
-                target.symlink_to(symlink, symlink_is_directory)
 
     def _print_report(self, filename: Path, modules: list[Module]) -> None:
         print(f"writing zip file {filename}\n")
@@ -1199,6 +1180,19 @@ class LinuxFreezer(Freezer, ELFParser):
             self, self.path, self.bin_path_includes, self.silent
         )
 
+    def _pre_copy_hook(self, source: Path, target: Path) -> tuple[Path, Path]:
+        """Prepare the source and target paths. In addition, it ensures that
+        the source of a symbolic link is copied by deferring the creation of
+        the link.
+        """
+        if source.is_symlink():
+            real_source = source.resolve()
+            symlink = real_source.name
+            real_target = target.with_name(symlink)
+            self._symlinks.add((target, symlink))
+            return real_source, real_target
+        return source, target
+
     def _post_copy_hook(
         self,
         source: Path,
@@ -1250,6 +1244,15 @@ class LinuxFreezer(Freezer, ELFParser):
                 rpath = ":".join(f"$ORIGIN/{r}" for r in fix_rpath)
                 if has_rpath != rpath:
                     self.set_rpath(target, rpath)
+
+    def _post_freeze_hook(self):
+        target: Path
+        symlink: str
+        for target, symlink in self._symlinks:
+            if self.silent < 1:
+                print(f"linking {target} -> {symlink}")
+            if not target.exists():
+                target.symlink_to(symlink)
 
     def _copy_top_dependency(self, source: Path) -> None:
         """Called for copying the top dependencies in _freeze_executable."""
